@@ -1,0 +1,235 @@
+{
+  "unet_high": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "wan22EnhancedNSFWCameraPrompt_nsfwFASTMOVEV2Q8H.gguf"
+    }
+  },
+  "unet_low": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "wan22EnhancedNSFWCameraPrompt_nsfwFASTMOVEV2Q8L.gguf"
+    }
+  },
+  "clip": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    }
+  },
+  "vae": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    }
+  },
+  "pos": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "Smooth natural motion, fluid realistic movement, high quality, detailed. Amateur smartphone footage, shot on a phone camera, handheld with slight natural camera shake, casual candid video, everything in sharp focus, deep depth of field, natural ambient lighting, realistic unedited look.",
+      "clip": ["clip", 0]
+    }
+  },
+  "neg": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走. talk. talking. speak. speaking, neck contortion, flat lighting, washed out colors, dull, low contrast, gray tint, cinematic look, film grain, professional color grading, dramatic studio lighting, shallow depth of field, bokeh.",
+      "clip": ["clip", 0]
+    }
+  },
+  "lora_high_1": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": ["unet_high", 0],
+      "lora_name": "WAN 2.2/02 NSFW-22-H-e8.safetensors",
+      "strength_model": 1.0
+    }
+  },
+  "lora_low_1": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": ["unet_low", 0],
+      "lora_name": "WAN 2.2/02 NSFW-22-L-e8.safetensors",
+      "strength_model": 1.0
+    }
+  },
+  "sage_high": {
+    "class_type": "PathchSageAttentionKJ",
+    "inputs": {
+      "model": ["lora_high_1", 0],
+      "sage_attention": "auto"
+    }
+  },
+  "sage_low": {
+    "class_type": "PathchSageAttentionKJ",
+    "inputs": {
+      "model": ["lora_low_1", 0],
+      "sage_attention": "auto"
+    }
+  },
+  "nag_high": {
+    "class_type": "WanVideoNAG",
+    "inputs": {
+      "model": ["sage_high", 0],
+      "conditioning": ["neg", 0],
+      "nag_scale": 11.0,
+      "nag_alpha": 0.25,
+      "nag_tau": 2.373
+    }
+  },
+  "nag_low": {
+    "class_type": "WanVideoNAG",
+    "inputs": {
+      "model": ["sage_low", 0],
+      "conditioning": ["neg", 0],
+      "nag_scale": 11.0,
+      "nag_alpha": 0.25,
+      "nag_tau": 2.373
+    }
+  },
+  "shift_high": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {
+      "model": ["nag_high", 0],
+      "shift": 5.0
+    }
+  },
+  "shift_low": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {
+      "model": ["nag_low", 0],
+      "shift": 5.0
+    }
+  },
+  "load_image": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "placeholder.png"
+    }
+  },
+  "resize": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "image": ["load_image", 0],
+      "upscale_method": "lanczos",
+      "width": 864,
+      "height": 1040,
+      "crop": "disabled"
+    }
+  },
+  "i2v": {
+    "class_type": "WanImageToVideo",
+    "inputs": {
+      "positive": ["pos", 0],
+      "negative": ["neg", 0],
+      "vae": ["vae", 0],
+      "start_image": ["resize", 0],
+      "width": 864,
+      "height": 1040,
+      "length": 81,
+      "batch_size": 1
+    }
+  },
+  "sampler_high": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "model": ["shift_high", 0],
+      "positive": ["i2v", 0],
+      "negative": ["i2v", 1],
+      "latent_image": ["i2v", 2],
+      "add_noise": "enable",
+      "noise_seed": 0,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "beta",
+      "start_at_step": 0,
+      "end_at_step": 4,
+      "return_with_leftover_noise": "enable"
+    }
+  },
+  "sampler_low": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "model": ["shift_low", 0],
+      "positive": ["i2v", 0],
+      "negative": ["i2v", 1],
+      "latent_image": ["sampler_high", 0],
+      "add_noise": "disable",
+      "noise_seed": 0,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "beta",
+      "start_at_step": 4,
+      "end_at_step": 10000,
+      "return_with_leftover_noise": "disable"
+    }
+  },
+  "decode": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["sampler_low", 0],
+      "vae": ["vae", 0]
+    }
+  },
+  "color_match": {
+    "class_type": "ColorMatch",
+    "inputs": {
+      "image_ref": ["resize", 0],
+      "image_target": ["decode", 0],
+      "method": "mkl",
+      "strength": 0.8
+    }
+  },
+  "trim_end": {
+    "class_type": "ImageFromBatch",
+    "inputs": {
+      "image": ["color_match", 0],
+      "batch_index": 0,
+      "length": 80
+    }
+  },
+  "rife": {
+    "class_type": "RIFE VFI",
+    "inputs": {
+      "frames": ["trim_end", 0],
+      "ckpt_name": "rife47.pth",
+      "clear_cache_after_n_frames": 10,
+      "multiplier": 2,
+      "fast_mode": true,
+      "ensemble": true,
+      "scale_factor": 1.0,
+      "dtype": "float32",
+      "torch_compile": false,
+      "batch_size": 1
+    }
+  },
+  "sharpen": {
+    "class_type": "ImageSharpen",
+    "inputs": {
+      "image": ["rife", 0],
+      "sharpen_radius": 1,
+      "sigma": 0.6,
+      "alpha": 0.3
+    }
+  },
+  "video": {
+    "class_type": "VHS_VideoCombine",
+    "inputs": {
+      "images": ["sharpen", 0],
+      "frame_rate": 45,
+      "loop_count": 0,
+      "filename_prefix": "wan22",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 17,
+      "save_metadata": false,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true
+    }
+  }
+}
