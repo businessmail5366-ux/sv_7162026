@@ -35,30 +35,22 @@
 #   UPDATE_COMFYUI        — true = обновить ComfyUI до свежего master.
 #                           Нужно для Krea2: CLIPLoader type "krea2" есть
 #                           только в новых версиях comfy-core.
+#   SAGE_INSTALL          — true (по умолч.) = поставить SageAttention на
+#                           поддерживаемых GPU (compute capability >= 8.0),
+#                           −20–40% времени семплинга WAN. Шаг выполняется
+#                           И при рестарте уже развёрнутого воркера.
+#   SAGE_REQUIRED         — true = воркер без рабочего sage помечается errored
+#                           и заменяется (по умолч. false: просто предупреждение).
+#   SAGE_PKG              — pip-спека пакета (по умолч. sageattention==1.0.6).
 # =============================================================================
 set -uo pipefail
 
 WORKSPACE="${WORKSPACE:-/workspace}"
 
-# Быстрый выход при рестарте инстанса: всё уже установлено и скачано,
-# ничего не перепроверяем — генерация доступна сразу.
-if [ -f "${WORKSPACE}/.provisioning_done" ]; then
-    echo "[provision] .provisioning_done found — skipping (fast start)"
-    exit 0
-fi
-COMFYUI_DIR="${COMFYUI_DIR:-${WORKSPACE}/ComfyUI}"
-MODELS_DIR="${COMFYUI_DIR}/models"
-NODES_DIR="${COMFYUI_DIR}/custom_nodes"
-
-MODELS_S3_PREFIX="${MODELS_S3_PREFIX:-wan22/models}"
-DOWNLOAD_BUDGET_SEC="${DOWNLOAD_BUDGET_SEC:-600}"
-EARLY_CHECK_SEC="${EARLY_CHECK_SEC:-90}"
-EARLY_GRACE_MULT="${EARLY_GRACE_MULT:-125}"   # проценты: 125 = бюджет*1.25
-BENCHMARK_JSON_PATH="${BENCHMARK_JSON_PATH:-${WORKSPACE}/wan22_benchmark.json}"
-
 log()  { echo "[provision] $*"; }
 
 # Кладём benchmark в BENCHMARK_JSON_PATH + в стандартное место pyworker'а
+BENCHMARK_JSON_PATH="${BENCHMARK_JSON_PATH:-${WORKSPACE}/wan22_benchmark.json}"
 write_benchmark() {
     printf '%s' "$1" > "${BENCHMARK_JSON_PATH}"
     for misc in $(find "${WORKSPACE}" /opt -maxdepth 6 -type d -path "*workers/comfyui-json/misc" 2>/dev/null); do
@@ -82,7 +74,69 @@ PIP="pip"
 for cand in /venv/main/bin/pip "${WORKSPACE}/venv/bin/pip" /opt/venv/bin/pip; do
     if [ -x "$cand" ]; then PIP="$cand"; break; fi
 done
-log "using pip: ${PIP}"
+PYTHON="python3"
+for cand in /venv/main/bin/python "${WORKSPACE}/venv/bin/python" /opt/venv/bin/python; do
+    if [ -x "$cand" ]; then PYTHON="$cand"; break; fi
+done
+log "using pip: ${PIP}, python: ${PYTHON}"
+
+# =============================================================================
+# 0. SageAttention — ДО быстрого выхода по .provisioning_done, чтобы шаг
+#    отработал и на уже развёрнутых воркерах при их рестарте.
+#    Функциональный тест (реальный вызов sageattn на GPU) — единственный
+#    критерий успеха; просто «pip поставился» не считается.
+# =============================================================================
+SAGE_INSTALL="${SAGE_INSTALL:-true}"
+SAGE_REQUIRED="${SAGE_REQUIRED:-false}"
+SAGE_PKG="${SAGE_PKG:-sageattention==1.0.6}"
+
+sage_test() {
+    "$PYTHON" - <<'PY'
+import torch
+from sageattention import sageattn
+q = torch.randn(1, 8, 128, 64, dtype=torch.float16, device="cuda")
+o = sageattn(q, q, q)
+assert o is not None and o.shape == q.shape
+print("sage functional test OK")
+PY
+}
+
+if [ "${SAGE_INSTALL}" = "true" ]; then
+    CC_MAJOR=$("$PYTHON" -c "import torch; print(torch.cuda.get_device_capability(0)[0])" 2>/dev/null || echo 0)
+    if [ "${CC_MAJOR:-0}" -ge 8 ]; then
+        if sage_test >/dev/null 2>&1; then
+            log "sageattention already functional (cc ${CC_MAJOR}.x)"
+        else
+            log "installing sageattention (${SAGE_PKG}, cc ${CC_MAJOR}.x)"
+            "$PIP" install --no-cache-dir "${SAGE_PKG}" \
+                || log "WARNING: pip install ${SAGE_PKG} failed"
+            if sage_test; then
+                log "OK: sageattention installed and functional"
+            elif [ "${SAGE_REQUIRED}" = "true" ]; then
+                fail "SAGE_REQUIRED=true, but sageattention is not functional on this GPU"
+            else
+                log "WARNING: sageattention not functional on this GPU — WAN будет работать без него (держи SAGE_ATTENTION_MODE=disabled на клиенте)"
+            fi
+        fi
+    else
+        log "GPU compute capability ${CC_MAJOR}.x < 8 — sageattention не поддерживается, пропускаю"
+    fi
+fi
+
+# Быстрый выход при рестарте инстанса: всё уже установлено и скачано,
+# ничего не перепроверяем — генерация доступна сразу.
+if [ -f "${WORKSPACE}/.provisioning_done" ]; then
+    echo "[provision] .provisioning_done found — skipping (fast start)"
+    exit 0
+fi
+COMFYUI_DIR="${COMFYUI_DIR:-${WORKSPACE}/ComfyUI}"
+MODELS_DIR="${COMFYUI_DIR}/models"
+NODES_DIR="${COMFYUI_DIR}/custom_nodes"
+
+MODELS_S3_PREFIX="${MODELS_S3_PREFIX:-wan22/models}"
+DOWNLOAD_BUDGET_SEC="${DOWNLOAD_BUDGET_SEC:-600}"
+EARLY_CHECK_SEC="${EARLY_CHECK_SEC:-90}"
+EARLY_GRACE_MULT="${EARLY_GRACE_MULT:-125}"   # проценты: 125 = бюджет*1.25
 
 mkdir -p "${MODELS_DIR}/diffusion_models" \
          "${MODELS_DIR}/vae" \
